@@ -1,0 +1,743 @@
+---
+title: "![](DEEP_Header.png){out.width=1400px}"
+date: "<i> Report Created: `r format(Sys.Date(), '%B %Y')`</i>"
+output:
+  html_document:
+    css: "style.css"
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    toccolor: black
+    theme: lumen
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(
+  comment = '', fig.width = 11, fig.height = 7, warning= FALSE, message = FALSE, fig.align ="left")
+```
+
+```{r LIBRARY, include= FALSE}
+#Check at line 47-49 for to change directory to match your file path before running!!
+
+#Install packages if not done already 
+#install.packages("dplyr")
+#install.packages("lubridate")
+#install.packages("plotly")
+#install.packages("tidyverse")
+#install.packages("htmlwidgets")
+#install.packages("htmltools")
+#install.packages("gt")
+#install.packages("padr")
+#install.packages("zoo")
+#install.packages("magrittr")
+library(dplyr)
+library(lubridate)
+library(plotly)
+library(tidyverse)
+library(htmlwidgets)
+library(htmltools)
+library(gt)
+library(padr)
+library(zoo)
+library(magrittr)
+library(reshape2)
+```
+
+```{r format, echo=FALSE}
+setwd("P:/Community Monitoring/Working/QuantAQ/QuantAQPM/Data_Files")
+dir <- "P:/Community Monitoring/Working/QuantAQ/QuantAQPM"
+dir_files <-"P:/Community Monitoring/Working/QuantAQ/QuantAQPM/Data_Files"
+
+#listing all files
+all_files <- list.dirs(path = dir_files, full.names = TRUE)
+
+#reformatting the AQMesh gas files, this will make a list of files that contain that file pattern (so make sure its that file pattern!)
+files <- list.files(path = all_files, pattern = "MOD")
+AQ_list <- lapply(files, read.csv)
+
+for (i in 1:length(AQ_list)){
+  #Subsetting based on the needed columns
+  AQ_list[[i]] <- AQ_list[[i]][c("period_start_utc", "sn", "sample_rh", "sample_temp", "pm25", "pm10")] 
+}
+
+#binding the rows!
+AQ <- bind_rows(AQ_list)
+
+#rename period_start_UTC to timestamp for ease and remove +00:00 from UTC
+AQ <- AQ %>%
+  rename(timestamp = period_start_utc)
+AQ <- AQ %>%
+  mutate(timestamp = substr(timestamp, 1, 19))
+
+#Convert timestamp column from character to POSIXct
+AQ$timestamp <- as.POSIXct(AQ$timestamp, 
+                           format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+#Convert to EST NOTE! period start is local time not always EST
+AQ$timestamp <- with_tz(AQ$timestamp, tzone = "EST")
+
+#breaking up by sensor
+AQ_00996 <- subset(AQ, sn== "MOD-PM-00996")
+
+#summarizing by hour
+completeness_threshold <- 0.75 #for comparison to regulatory data
+AQ_avg_96 <- AQ_00996 %>%
+  mutate(Date_Time = format(timestamp, "%Y-%m-%d %H:00:00")) %>%
+  group_by(Date_Time) %>%
+  summarize(PM25_00996 = if (sum(!is.na(pm25))/4 >= 
+                           completeness_threshold) mean(pm25, na.rm = TRUE) else NA_real_,
+            PM10_00996 = if (sum(!is.na(pm10))/4 >= 
+                           completeness_threshold) mean(pm10, na.rm = TRUE) else NA_real_,
+            RH_00996 = if (sum(!is.na(sample_rh))/4 >= 
+                     completeness_threshold) mean(sample_rh, na.rm = TRUE) else NA_real_,
+            Temp_00996 = if (sum(!is.na(sample_temp))/4 >= 
+                       completeness_threshold) mean(sample_temp, na.rm = TRUE) else NA_real_)
+
+#breaking up by sensor
+AQ_00997 <- subset(AQ, sn== "MOD-PM-00997")
+
+#summarizing by hour
+completeness_threshold <- 0.75 #for comparison to regulatory data
+AQ_avg_97 <- AQ_00997 %>%
+  mutate(Date_Time = format(timestamp, "%Y-%m-%d %H:00:00")) %>%
+  group_by(Date_Time) %>%
+  summarize(PM25_00997 = if (sum(!is.na(pm25))/4 >= 
+                             completeness_threshold) mean(pm25, na.rm = TRUE) else NA_real_,
+            PM10_00997 = if (sum(!is.na(pm10))/4 >= 
+                             completeness_threshold) mean(pm10, na.rm = TRUE) else NA_real_,
+            RH_00997 = if (sum(!is.na(sample_rh))/4 >= 
+                           completeness_threshold) mean(sample_rh, na.rm = TRUE) else NA_real_,
+            Temp_00997 = if (sum(!is.na(sample_temp))/4 >= 
+                             completeness_threshold) mean(sample_temp, na.rm = TRUE) else NA_real_)
+
+#Merging the quant
+AQ_avg <- merge(AQ_avg_96, AQ_avg_97, by = "Date_Time", all.x = TRUE)
+
+#Pulling in East Hartford reference files, even though its one file I'm still doing list, just so you have the option to just pull new files
+#save files from Envista as csv, just makes it a tad easier in R
+#Also Envista is weird with date time, you have to open this file and remove the bottom summary BECAUSE this also changes the time format!
+EH_files <- list.files(path = all_files, pattern = "East_Hartford")
+EH_list <- lapply(EH_files, read.csv, skip = 2)
+
+for (i in 1:length(EH_list )){
+  #removing that random row that isnt needed
+  EH_list[[i]] <- EH_list[[i]][-c(1),]
+}
+EH <- bind_rows(EH_list)
+
+#Timestamp
+EH$Date_Time  <- as.POSIXct(EH$Date...Time, format = "%m/%d/%Y %H:%M", TZ= "UTC")
+EH <- pad(EH)
+EH$Date_Time <- as.character(format(EH$Date_Time))
+EH <- EH[,-1]
+
+#Making one data frame with the data merged by hour 
+all <- merge(EH, AQ_avg, by="Date_Time", all.x = TRUE)
+
+#removing rows where there is no date_time 
+all <- all %>% drop_na(Date_Time)
+
+#Writing a csv for all data, this is what will be downloadable on the markdown
+write.csv(all, paste0(dir, "/CT_QuantAQPMData.csv"), row.names=FALSE, na = "")
+
+
+#Making individual dataframes to compare each pollutant/ reformat pollutants
+PM25 <- all[,c("Date_Time","T640_PM25", "PM25_00996", "PM25_00997")]
+names(PM25) <- c("Date_Time", "EH", "MOD_00996", "MOD_00997")
+PM10 <- all[,c("Date_Time", "T640_PM10", "PM10_00996", "PM10_00997")]
+names(PM10) <- c("Date_Time", "EH", "MOD_00996", "MOD_00997")
+Temp <- all[,c("Date_Time", "TMPOS", "Temp_00996", "Temp_00997")] 
+names(Temp) <- c("Date_Time", "EH", "MOD_00996", "MOD_00997")
+RH <- all[,c("Date_Time", "RH", "RH_00996", "RH_00997")] 
+names(RH) <- c("Date_Time", "EH", "MOD_00996", "MOD_00997")
+
+#Adding a column with the data type, sets up for the loops
+PM25$Data_Type <-"PM\u2082.\u2085"
+PM10$Data_Type <- "PM\u2081\u2080"
+Temp$Data_Type <- "Temperature"
+Temp$units <- "(°C)"
+RH$Data_Type <- "Relative Humidity"
+RH$units <- "(%)"
+
+#Binding gases then pm into a dataframe
+pm <- rbind(PM25,PM10)
+met <- rbind(Temp,RH)
+
+#Adding a units column 
+pm$units <- "(µg/m³)"
+
+#Combined dataframe for graphing!
+comb_full <- rbind(pm, met)
+
+#This is detecting outliers based on the IQR Method
+#It basically will find values in Q1 and Q3 multiple by 1.5 and fence off those values, BUT it will rename the outlier "Outlier"
+#Renaming so you can later count specifically what was counted as an outlier 
+detect_outlier <- function(x,iqtimes=1.5) {
+  # calculate first quantile
+  Quantile1 <- quantile(x, probs=.25, na.rm = T)
+  # calculate third quantile
+  Quantile3 <- quantile(x, probs=.75, na.rm = T)
+  # calculate inter quartile range
+  IQR = Quantile3-Quantile1
+  # return true or false
+  outiers <- x > Quantile3 + (IQR*iqtimes) | x < Quantile1 - (IQR*iqtimes)
+  x[which(outiers)] <- "outlier"
+  return(x)
+}
+
+#designating what columns to clean, goes based on what is numeric
+cols_to_clean <- names(comb_full)[sapply(comb_full, is.numeric)]
+
+#Running the function
+comb_full <- comb_full %>% group_by(Data_Type) %>%
+ mutate(across(cols_to_clean , ~detect_outlier(.,iqtimes=1.5)))
+
+#new dataframe for the outliers before I turn the data numeric and outliers are removed 
+comb_out <- comb_full
+
+#This adds the quarter an year, but I dont like the format so also changing that
+comb_full$Quarter <- as.yearqtr(comb_full$Date_Time, format = "%Y-%m-%d")
+comb_full$Quarter <- format(comb_full$Quarter, format = "%q (%Y)")
+
+#making sure everything is numeric so it will graph
+comb_full$EH <- as.numeric(comb_full$EH)
+comb_full$MOD_00996 <- as.numeric(comb_full$MOD_00996)
+comb_full$MOD_00997 <- as.numeric(comb_full$MOD_00997)
+
+#Truncating the values 
+comb_full$MOD_00996 <- trunc(comb_full$MOD_00996 * 10) / 10
+comb_full$MOD_00997 <- trunc(comb_full$MOD_00997 * 10) / 10
+```
+
+```{r csv link, echo=FALSE}
+#This is how the csv is inserted as a link, then is added to the text below
+readBin("CT_QuantAQPMData.csv", "raw", file.info("CT_QuantAQPMData.csv")$size) %>% 
+  openssl::base64_encode() -> encoded
+```
+
+Two collocated QuantAQ MODULAIR-PM air quality monitoring sensors were installed at a monitoring site in East Hartford, Connecticut to evaluate its performance tracking particulate and meteorology data over a year long time frame. Hourly data for PM~2.5~, PM~10~, temperature and relative humidity were compared to reference monitors located at the same site. The full downloadable dataset used is located here <a download="CT_QuantAQPMData.csv" href="`r sprintf('data:text/csv;base64,%s', encoded)`">Download CSV</a>. 
+
+# Sensor Details 
+## QuantAQ MODULAIR-PM Specifications
+<table border="2" style="border-collapse: collapse; border-color: black;">
+<tr style="background-color: #0D2C6C; color: white; text-align: left;">
+<td style="font-size: 16px; padding: 8px; border: 1px solid black;"><b>Possible Configuration</td>
+<td style="font-size: 16px; padding: 8px; border: 1px solid black;"><b>Evaluated Configuration</td>
+<td style="font-size: 16px; padding: 8px; border: 1px solid black;"><b>Cost</td>
+<td style="font-size: 16px; padding: 8px; border: 1px solid black;"><b>Data Access</td>
+<td style="font-size: 16px; padding: 8px; border: 1px solid black;"><b>Power Supply</td>
+<td style="font-size: 16px; padding: 8px; border: 1px solid black;"><b>Considerations</td>
+<td style="font-size: 16px; padding: 8px; border: 1px solid black;"><b>Reference Monitors Compared</b></td>
+</tr>
+</tr>
+<tr style="background-color: #white; color: black;">
+<td style=" text-align: left; vertical-align:top; padding: 8px; border: 1px solid black;"> <b> Particulates: </b> PM~1~, PM~2.5~, PM~10~ <br> <b> Meteorology: </b> Temp, RH </td>
+<td style ="vertical-align:top; padding: 8px; border: 1px solid black;"><b> Particulates: </b> PM~2.5~, PM~10~ <br> <b> Meteorology: </b> Temp, RH
+</td>
+<td style ="vertical-align:top; padding: 8px; border: 1px solid black;"> <b> Sensor:</b>  $1,500.00  <br> <b> Solar Power System: </b> $495.00 <br> <b> Cloud Service: </b> $500.00 per device & year
+</td>
+<td style ="vertical-align:top; padding: 8px; border: 1px solid black;"> Web Interface, API, SD Card
+</td>
+<td style ="vertical-align:top; padding: 8px; border: 1px solid black;">  Standard 5V, 2A USB-C connection (connect to solar or battery)
+</td>
+<td style ="vertical-align:top; padding: 8px; border: 1px solid black;"> <b> Time Resolution: </b> 5 minute to 24 hour intervals <br> <b> Dimensions: </b> 6.59” x 6.59” x 5.11”
+ <br> <b> Weight: </b> 1.8 kg
+</td>
+<td style ="vertical-align:top; padding: 8px; border: 1px solid black;"><b> PM~2.5~ & PM~10~:</b> Teledyne API T640X
+<br>
+<b> Temp & RH: </b> Climatronix & Vaisala via AutoMet 580
+</td>
+</tr>
+</table>
+
+## Setup
+```{r, echo = FALSE, out.width = '110%', out.height= '110%', fig.show = 'hold', fig.align = 'center', fig.cap=' '}
+#adding the photo of the sensor
+knitr::include_graphics(c("QuantAQPM.png"))
+```
+
+```{r timeseries, results = 'asis', echo = FALSE}
+#This makes a list of timeseries plots with two loops, first through the quarter/year then through datatype
+#Output is a timeseries graph for each quarter/year for each measurement 
+timeseries = list()
+idx <- 1
+for (i in unique(comb_full$Quarter)){
+  
+  i_all <- subset(comb_full, comb_full$Quarter==i)
+  
+  for (j in unique(i_all$Data_Type)){
+    
+    j_all <- subset(i_all, i_all$Data_Type==j)
+    j_all$Date_Time <- as.POSIXct(j_all$Date_Time)
+    
+    plot_name <- paste0("Q_", i, "_", j)
+    
+    timeseries[[plot_name]] <- plot_ly(data= j_all, x = ~Date_Time) %>%
+      add_lines(y = ~EH, name = "Reference", line = list(color = "black"), opacity = 0.9,
+      hoverinfo = 'text', text = ~paste0(format(Date_Time, "%m/%d/%y %H:%M"),"<br>","Reference: ", EH)) %>%
+      add_lines(y = ~MOD_00996, name = "MOD-PM-00996", line = list(color = "darkgreen"), opacity = 0.6,
+      hoverinfo = 'text', text = ~paste0(format(Date_Time, "%m/%d/%y %H:%M"),"<br>","MOD-PM-00996: ", MOD_00996)) %>%
+      add_lines(y = ~MOD_00997, name = "MOD-PM-00997", line = list(color = "blue"), opacity = 0.5,
+      hoverinfo = 'text', text = ~paste0(format(Date_Time, "%m/%d/%y %H:%M"),"<br>","MOD-PM-00997: ", MOD_00997)) %>%
+      layout(title = list(text = paste0("QuantAQ MODULAIR-PM Sensor: ", unique(j_all$Data_Type)," Comparision",
+                                        "<br>",
+                                        "<sup>", 
+                                        "Quarter ", unique(i_all$Quarter),  "<sup>")),
+             legend = list(orientation = 'h', title=list(text="Monitor Type:")), 
+             xaxis = list(title = " ",
+                          type = 'date',
+                          tickformat = "%B %d <br>%Y"),
+             annotations = list(x = 0.35, y = -0.17, text = paste0("<i> *Outliers removed from QuantAQ dataset using IQR Method. </i>"), 
+                                showarrow = F, xref='paper', yref='paper', 
+                                xanchor='right', yanchor='auto', xshift=0, yshift=0,
+                                font=list(size=12, color="grey")),
+             yaxis = list(title = paste0(unique(j_all$Data_Type), " ", unique(j_all$units)), rangemode = 'tozero'))
+    idx <- idx + 1
+  }}
+```
+
+# Timeseries Comparison
+
+QuantAQ MODULAIR-PM hourly data for PM~2.5~, PM~10~, temperature and relative humidity were compared by quarter to reference values (Q1: January-March, Q2: April-June, Q3: July-September, Q4: October-December).
+
+## PM~2.5~ {.tabset .tabset-fade .tabset-pills}
+### Quarter 3 (2023)
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_3 (2023)_PM₂.₅']]
+```
+### Quarter 4 (2023)
+```{r results = 'asis', echo = FALSE}
+timeseries[['Q_4 (2023)_PM₂.₅']]
+```
+### Quarter 1 (2024)
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_1 (2024)_PM₂.₅']]
+```
+### Quarter 2 (2024)
+```{r results = 'asis', echo = FALSE}
+timeseries[['Q_2 (2024)_PM₂.₅']]
+```
+
+## PM~10~ {.tabset .tabset-fade .tabset-pills}
+### Quarter 3 (2023)
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_3 (2023)_PM₁₀']]
+```
+
+### Quarter 4 (2023)
+```{r results = 'asis', echo = FALSE}
+timeseries[['Q_4 (2023)_PM₁₀']]
+```
+
+### Quarter 1 (2024)
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_1 (2024)_PM₁₀']]
+```
+
+### Quarter 2 (2024)
+```{r results = 'asis', echo = FALSE}
+timeseries[['Q_2 (2024)_PM₁₀']]
+```
+
+## Temperature {.tabset .tabset-fade .tabset-pills}
+### Quarter 3 (2023)
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_3 (2023)_Temperature']]
+```
+### Quarter 4 (2023)
+```{r results = 'asis', echo = FALSE}
+timeseries[['Q_4 (2023)_Temperature']]
+```
+### Quarter 1 (2024)
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_1 (2024)_Temperature']]
+```
+### Quarter 2 (2024)
+```{r results = 'asis', echo = FALSE}
+timeseries[['Q_2 (2024)_Temperature']]
+```
+
+## Relative Humidity {.tabset .tabset-fade .tabset-pills}
+### Quarter 3 (2023)
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_3 (2023)_Relative Humidity']]
+```
+### Quarter 4 (2023)
+```{r results = 'asis', echo = FALSE}
+timeseries[['Q_4 (2023)_Relative Humidity']]
+```
+### Quarter 1 (2024)
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_1 (2024)_Relative Humidity']]
+```
+### Quarter 2 (2024)
+```{r results = 'asis', echo = FALSE}
+timeseries[['Q_2 (2024)_Relative Humidity']]
+```
+
+```{r results = 'asis', echo = FALSE}
+#correlation plot
+#Removing nas for this one because correlation plots wont just ignore them
+all_corr <- na.omit(comb_full)
+correlation <- tagList()
+idx <- 1
+for (i in unique(all_corr$Data_Type)){
+  
+  i_all <- subset(all_corr, all_corr$Data_Type==i)
+  
+  lm_calc <- lm(i_all$MOD_00996 ~ i_all$EH)
+  slope <- coef(lm_calc)[2]
+  y <- coef(lm_calc)[1]
+  r <- summary(lm_calc)$r.squared
+  
+  corrplot_name <- paste0("EH_996_", i)
+  
+  correlation[[corrplot_name]] <-plot_ly(data = i_all) %>% 
+    add_markers(x = i_all$EH, y = i_all$MOD_00996, name = " ", marker = list(color = "lightsteelblue",
+                                                                      line = list(color = "#0D2C6C",width = 1.3))) %>%
+    add_lines(x = i_all$EH, y = fitted(lm(i_all$MOD_00996 ~ i_all$EH)),name = " ", line=list(color = "black", width= 1)) %>%
+    layout(showlegend = F, 
+           title = list(text = paste0("QuantAQ MOD-PM-00996 and Reference Sensor: ", 
+                                      unique(i_all$Data_Type)," Correlation ", unique(i_all$units), "<br>",
+                                      "<sup>", "y=", round(slope, 3), "x + ", round(y,3), "  ", "R\u00b2", "=", round(r,3),"<sup>")),
+           annotations = list(x = 0.35, y = -0.07, text = paste0("<i> *Outliers removed from QuantAQ dataset using IQR Method. </i>"), 
+                              showarrow = F, xref='paper', yref='paper', 
+                              xanchor='right', yanchor='auto', xshift=0, yshift=0,
+                              font=list(size=12, color="grey")),
+           xaxis = list(title = "Reference", rangemode = 'tozero'), 
+           yaxis = list(title = "MOD-00996", rangemode = 'tozero'))
+  idx <- idx + 1
+}
+```
+
+# Correlation Comparison
+## QuantAQ MOD-PM-00996 and Reference {.tabset .tabset-fade .tabset-pills}
+### PM~2.5~ 
+```{r results = 'asis', echo = FALSE}
+correlation[["EH_996_PM₂.₅"]]
+```
+### PM~10~
+```{r results = 'asis', echo = FALSE}
+correlation[["EH_996_PM₁₀"]]
+```
+### Temperature
+```{r results = 'asis', echo = FALSE}
+correlation[["EH_996_Temperature"]]
+```
+### Relative Humidity
+```{r results = 'asis', echo = FALSE}
+correlation[["EH_996_Relative Humidity"]]
+```
+
+```{r results = 'asis', echo = FALSE}
+#correlation plot 
+for (i in unique(all_corr$Data_Type)){
+  
+  i_all <- subset(all_corr, all_corr$Data_Type==i)
+  
+  lm_calc <- lm(i_all$MOD_00997 ~ i_all$EH)
+  slope <- coef(lm_calc)[2]
+  y <- coef(lm_calc)[1]
+  r <- summary(lm_calc)$r.squared
+  
+  corrplot_name <- paste0("EH_997_", i)
+  
+  correlation[[corrplot_name]] <-plot_ly(data = i_all) %>% 
+    add_markers(x = i_all$EH, y = i_all$MOD_00997, name = " ", marker = list(color = "lightsteelblue",
+                                                                             line = list(color = "#0D2C6C",width = 1.3))) %>%
+    add_lines(x = i_all$EH, y = fitted(lm(i_all$MOD_00997 ~ i_all$EH)),name = " ", line=list(color = "black", width= 1)) %>%
+    layout(showlegend = F, 
+           title = list(text = paste0("QuantAQ MOD-PM-00997 and Reference Sensor: ", 
+                                      unique(i_all$Data_Type)," Correlation ", unique(i_all$units), "<br>",
+                                      "<sup>", "y=", round(slope, 3), "x + ", round(y,3), "  ", "R\u00b2", "=", round(r,3),"<sup>")),
+           annotations = list(x = 0.35, y = -0.07, text = paste0("<i> *Outliers removed from QuantAQ dataset using IQR Method. </i>"), 
+                              showarrow = F, xref='paper', yref='paper', 
+                              xanchor='right', yanchor='auto', xshift=0, yshift=0,
+                              font=list(size=12, color="grey")),
+           xaxis = list(title = "Reference", rangemode = 'tozero'), 
+           yaxis = list(title = "MOD-PM-00997", rangemode = 'tozero'))
+  idx <- idx + 1
+}
+```
+## QuantAQ MOD-PM-00997 and Reference {.tabset .tabset-fade .tabset-pills}
+### PM~2.5~ 
+```{r results = 'asis', echo = FALSE}
+correlation[["EH_997_PM₂.₅"]]
+```
+### PM~10~
+```{r results = 'asis', echo = FALSE}
+correlation[["EH_997_PM₁₀"]]
+```
+### Temperature
+```{r results = 'asis', echo = FALSE}
+correlation[["EH_997_Temperature"]]
+```
+### Relative Humidity
+```{r results = 'asis', echo = FALSE}
+correlation[["EH_997_Relative Humidity"]]
+```
+
+```{r results = 'asis', echo = FALSE}
+#correlation plot 
+for (i in unique(all_corr$Data_Type)){
+  
+  i_all <- subset(all_corr, all_corr$Data_Type==i)
+  
+  lm_calc <- lm(i_all$MOD_00997 ~ i_all$MOD_00996)
+  slope <- coef(lm_calc)[2]
+  y <- coef(lm_calc)[1]
+  r <- summary(lm_calc)$r.squared
+  
+  corrplot_name <- paste0("m996_m997_", i)
+  
+  correlation[[corrplot_name]] <-plot_ly(data = i_all) %>% 
+    add_markers(x = i_all$MOD_00996, y = i_all$MOD_00997, name = " ", marker = list(color = "lightsteelblue",
+                                                                             line = list(color = "#0D2C6C",width = 1.3))) %>%
+    add_lines(x = i_all$MOD_00996, y = fitted(lm(i_all$MOD_00997 ~ i_all$MOD_00996)),name = " ", line=list(color = "black", width= 1)) %>%
+    layout(showlegend = F, 
+           title = list(text = paste0("QuantAQ MOD-PM-00997 and MOD-PM-00996: ", 
+                                      unique(i_all$Data_Type)," Correlation ", unique(i_all$units), "<br>",
+                                      "<sup>", "y=", round(slope, 3), "x + ", round(y,3), "  ", "R\u00b2", "=", round(r,3),"<sup>")),
+           annotations = list(x = 0.35, y = -0.07, text = paste0("<i> *Outliers removed from QuantAQ dataset using IQR Method. </i>"), 
+                              showarrow = F, xref='paper', yref='paper', 
+                              xanchor='right', yanchor='auto', xshift=0, yshift=0,
+                              font=list(size=12, color="grey")),
+           xaxis = list(title = "MOD-PM-00996", rangemode = 'tozero'), 
+           yaxis = list(title = "MOD-PM-00997", rangemode = 'tozero'))
+  idx <- idx + 1
+}
+```
+## QuantAQ MOD-PM-00996 and MOD-PM-00997 {.tabset .tabset-fade .tabset-pills}
+### PM~2.5~ 
+```{r results = 'asis', echo = FALSE}
+correlation[["m996_m997_PM₂.₅"]]
+```
+### PM~10~
+```{r results = 'asis', echo = FALSE}
+correlation[["m996_m997_PM₁₀"]]
+```
+### Temperature
+```{r results = 'asis', echo = FALSE}
+correlation[["m996_m997_Temperature"]]
+```
+### Relative Humidity
+```{r results = 'asis', echo = FALSE}
+correlation[["m996_m997_Relative Humidity"]]
+```
+
+```{r results = 'asis', echo = FALSE}
+#finding outliers
+o_996 <- comb_out %>%
+  # Create a new column to check if "outlier" is present
+  mutate(Contains_Outlier = grepl("outlier", MOD_00996, ignore.case = TRUE)) %>%
+  # Group by Data_Type
+  group_by(Data_Type) %>%
+  # Summarize the percentage of rows containing "outlier"
+  summarize(
+    Total_Count = n(),
+    Outlier_Count = sum(Contains_Outlier),
+    Percentage_Outlier = (Outlier_Count / Total_Count) * 100
+  )
+o_996$Sensor <- "996_EH"
+
+o_997 <- comb_out %>%
+  # Create a new column to check if "outlier" is present
+  mutate(Contains_Outlier = grepl("outlier", MOD_00997, ignore.case = TRUE)) %>%
+  # Group by Data_Type
+  group_by(Data_Type) %>%
+  # Summarize the percentage of rows containing "outlier"
+  summarize(
+    Total_Count = n(),
+    Outlier_Count = sum(Contains_Outlier),
+    Percentage_Outlier = (Outlier_Count / Total_Count) * 100
+  )
+o_997$Sensor <- "997_EH"
+Outlier <- rbind(o_996, o_997)
+
+#rounding the data
+Outlier <- Outlier %>% mutate(across(where(is.numeric), ~ round(., 2)))
+Outlier <- Outlier[c("Data_Type", "Sensor", "Percentage_Outlier")]
+
+#Setting up table, 996 and EH stats
+T996_EH <- do.call(rbind, lapply(unique(all_corr$Data_Type), function(d) {
+  T996_EH_model <- lm(MOD_00996 ~ EH, data = all_corr[all_corr$Data_Type == d,])
+  data.frame(Data_Type = d, Intercept = coef(T996_EH_model)[1],
+             Slope = coef(T996_EH_model)[2], r_squared = summary(T996_EH_model)$r.squared,
+             row.names = NULL)
+}))
+T996_EH$Sensor <- "996_EH"
+
+#Setting up table, 415 and EH stats
+T997_EH <- do.call(rbind, lapply(unique(all_corr$Data_Type), function(d) {
+  T997_EH_model <- lm(MOD_00997 ~ EH, data = all_corr[all_corr$Data_Type == d,])
+  data.frame(Data_Type = d, Intercept = coef(T997_EH_model)[1],
+             Slope = coef(T997_EH_model)[2], r_squared = summary(T997_EH_model)$r.squared,
+             row.names = NULL)
+}))
+T997_EH$Sensor <- "997_EH"
+
+#Setting up table, 997 and 996 stats
+T997_996 <- do.call(rbind, lapply(unique(all_corr$Data_Type), function(d) {
+  T997_996_model <- lm(MOD_00997 ~ MOD_00996, data = all_corr[all_corr$Data_Type == d,])
+  data.frame(Data_Type = d, Intercept = coef(T997_996_model)[1],
+             Slope = coef(T997_996_model)[2], r_squared = summary(T997_996_model)$r.squared,
+             row.names = NULL)
+}))
+T997_996$Sensor <- "997_996"
+
+#binding them for the table!
+table <- rbind(T996_EH, T997_EH, T997_996)
+
+#Root mean square error
+rmse1 <- all_corr %>%
+  group_by(Data_Type) %>%
+  summarize(
+    RMSE = sqrt(mean((EH - MOD_00996)^2)))
+rmse1$Sensor <- "996_EH"
+
+rmse2 <- all_corr %>%
+  group_by(Data_Type) %>%
+  summarize(
+    RMSE = sqrt(mean((EH - MOD_00997)^2)))
+rmse2$Sensor <- "997_EH"
+
+rmse3 <- all_corr %>%
+  group_by(Data_Type) %>%
+  summarize(
+    RMSE = sqrt(mean((MOD_00996 - MOD_00997)^2)))
+rmse3$Sensor <- "997_996"
+
+#binding them for the table!
+rmse <- rbind(rmse1, rmse2, rmse3)
+table <- merge(table, rmse, by=c("Sensor", "Data_Type"))
+table <- table %>% mutate(across(where(is.numeric), ~ round(., 2)))
+
+#Finding the na percent
+na_996 <- comb_out %>%
+  group_by(Data_Type) %>%
+  summarise(
+    total = n(),
+    na_count = sum(is.na(MOD_00996)),
+    na_percent = (na_count / total) * 100
+  )
+na_996$na <- 100 - na_996$na_percent
+na_996 <- na_996[c("Data_Type", "na")]
+names(na_996)[2] <- "Data Completeness (%)"
+na_996$Sensor <- "996_EH"
+
+na_997 <- comb_out %>%
+  group_by(Data_Type) %>%
+  summarise(
+    total = n(),
+    na_count = sum(is.na(MOD_00997)),
+    na_percent = (na_count / total) * 100
+  )
+na_997$na <- 100 - na_997$na_percent
+na_997 <- na_997[c("Data_Type", "na")]
+names(na_997)[2] <- "Data Completeness (%)"
+na_997$Sensor <- "997_EH"
+
+#Merging together 
+na <- rbind(na_996, na_997)
+na <- na %>% mutate(across(where(is.numeric), ~ round(., 2)))
+table <- merge(table, na, by = c("Sensor", "Data_Type"), all.x = TRUE)
+table <- merge(table, Outlier, by = c("Sensor", "Data_Type"), all.x=TRUE)
+
+#Formatting
+table <- table %>% mutate(Sensor = case_when(table$Sensor == "996_EH"	~ "MOD-PM-00996 vs. Reference",
+                                             table$Sensor == "997_EH"	~ "MOD-PM-00997 vs. Reference",
+                                             table$Sensor == "997_996"	~ "MOD-PM-00996 vs. MOD-PM-00997"))
+#Reformatting to my liking
+table <- table[c("Sensor","Data_Type", "r_squared", "Slope", "Intercept", "RMSE","Percentage_Outlier", "Data Completeness (%)")]
+names <- c("MOD-PM-00996 vs. Reference", "MOD-PM-00997 vs. Reference", "MOD-PM-00996 vs. MOD-PM-00997")
+table <- table %>%
+  mutate(Sensor = factor(Sensor, levels = names)) %>%
+  arrange(Sensor)
+
+na_count <- apply(table, 1, function(x) sum(is.na(x)))
+
+table <- t(apply(table, 1, function(x) {
+  if(sum(is.na(x)) == 1) {
+    x[is.na(x)] <- "0.00"
+  }
+  return(x)
+}))
+table <- as.data.frame(table)
+
+QuantPM_RDS <- table[c("Data_Type", "r_squared", "Sensor")]
+saveRDS(QuantPM_RDS, file="QuantPM_RDS.rds")
+
+# Define the range for the slope
+slope_min <- 1.0 - 0.35
+slope_max <- 1.0 + 0.35
+
+table$Intercept <- as.numeric(table$Intercept)
+table$RMSE <- as.numeric(table$RMSE)
+table1 <- table |>
+   gt(
+     rowname_col = "Data_Type",
+     groupname_col = "Sensor")|>
+   cols_width(everything() ~ px(130)) |>
+   tab_header(
+     title = ("QuantAQ MODULAIR-PM"),
+     subtitle = ("Sensor vs. Reference Correlations"))|>
+   cols_label(
+     r_squared = ("R\u00b2"),
+     Slope = ("Slope"),
+     Intercept = ("Intercept"),
+     Percentage_Outlier = ("Outlier Percentage"),
+     'Data Completeness (%)' = ("Data Completeness"))|>
+   cols_align(
+     align = ("center"),
+     columns = everything())|>
+   sub_missing(
+     missing_text = "-")|>
+tab_footnote(
+    footnote =("Bolded values indicate the target was met for PM data according to the recommended EPA performance metrics."), 
+    locations = cells_title("subtitle"))|>
+  tab_options(
+      footnotes.font.size = px(11))|>
+tab_style(
+      style = list(cell_text(weight = "bold")), 
+      locations = cells_body(
+      columns = c(r_squared),
+      rows = Data_Type %in% c("PM₂.₅","PM₁₀")  & r_squared >= 0.7))|>
+tab_style(
+      style = list(cell_text(weight = "bold")), 
+      locations = cells_body(
+      columns = c(Slope),
+      rows = Data_Type %in% c("PM₂.₅","PM₁₀")  &  Slope >= slope_min & Slope <= slope_max))|>
+tab_style(
+      style = list(cell_text(weight = "bold")), 
+      locations = cells_body(
+      columns = c(Intercept),
+      rows = Data_Type %in% c("PM₂.₅") & Intercept > -5 & Intercept < 5))|>
+tab_style(
+      style = list(cell_text(weight = "bold")), 
+      locations = cells_body(
+      columns = c(Intercept),
+      rows = Data_Type %in% c("PM₁₀") & Intercept > - 10 & Intercept < 10))|>
+tab_style(
+      style = list(cell_text(weight = "bold")), 
+      locations = cells_body(
+      columns = c(RMSE),
+      rows = Data_Type ==  "PM₂.₅" & RMSE <= 7))|>
+tab_style(
+  style = list(cell_text(weight = "bold")), 
+  locations = cells_body(
+    columns = c(RMSE),
+    rows = Data_Type == "PM₁₀" & RMSE <= 14
+  )
+)
+
+
+gtsave(table1, "table1.png")
+```
+# Results Summary
+```{r,fig.align = 'left', results='asis', out.width= '95%', out.height = '95%', echo = FALSE}
+knitr::include_graphics("table1.png")
+```
+<i> \*Outliers were defined from the QuantAQ dataset using the IQR Method (all data points more than 1.5 below the the lower bound quartile or above the upper bound quartile). </i>
+
+# Contact Information
+Questions on Connecticut community based monitoring: DEEP.AirMonitoring@ct.gov <br>
+Questions on creating this report: Jessica.Landry@ct.gov
